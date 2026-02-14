@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "podio": {
+      "command": "node",
+      "args": ["/Users/stoskov/Work/projects/podio/mcp-claude/dist/index.js"],
+      "env": {
+        "PODIO_CLIENT_ID": "test-otfbvo",
+        "PODIO_CLIENT_SECRET": "ALRzrOYdcUB1r2mzcfBpMgLDGhROSpXL2ohgu2bmKOuzrvObZCUp8mhguFjFwH0W",
+        "PODIO_USERNAME": "kagoxoh564@foboxs.com",
+        "PODIO_PASSWORD": "]Bh.4)5MX3BR&BFF"
+      }
+    }
+  }
+}
