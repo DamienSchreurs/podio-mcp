@@ -71,7 +71,7 @@ const ListItemsSchema = z.object({
     .record(z.string(), z.any())
     .optional()
     .describe(
-      'Filter items by field values. Keys are field external_ids, values depend on field type. Use get_app_structure first to see available fields. Example: {"status": 1, "priority": [1,2]}'
+      'Filter items by field values. Keys are field external_ids, values depend on field type. Use get_app_structure first to see available fields. Category fields must use integer option IDs in an array (not string labels): {"deal-stage": [1, 2]}. Use get_app_structure to find option IDs.'
     ),
   sort_by: z
     .string()
@@ -105,7 +105,7 @@ const CreateItemSchema = z.object({
   fields: z
     .record(z.string(), z.any())
     .describe(
-      'Key-value pairs of field values. Keys should be field external_ids (use get_app_structure to discover them). Values depend on field type: text fields take strings, category fields take option IDs or text, date fields take "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS", relationship fields take item IDs (number or array of numbers), contact fields take profile IDs.'
+      'Key-value pairs of field values. Keys should be field external_ids (use get_app_structure to discover them). Values depend on field type: text fields take strings, category fields take option IDs or label strings, date fields take "YYYY-MM-DD HH:MM:SS" (time is REQUIRED — use 00:00:00 for midnight), relationship fields take item IDs (number or array of numbers), contact fields take profile IDs.'
     ),
   tags: z
     .array(z.string().min(1).max(100))
@@ -118,8 +118,9 @@ const UpdateItemSchema = z.object({
   item_id: z.number().int().positive().describe("The Podio item ID to update"),
   fields: z
     .record(z.string(), z.any())
+    .optional()
     .describe(
-      "Key-value pairs of fields to update. Only include fields you want to change. Same format as create_item."
+      "Key-value pairs of fields to update. Optional — omit or pass {} if only updating tags. Same format as create_item."
     ),
   tags: z
     .array(z.string().min(1).max(100))
@@ -152,9 +153,9 @@ const ManageTaskSchema = z.object({
   description: z.string().max(5000).optional().describe("Task description"),
   due_date: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}(\s\d{2}:\d{2}:\d{2})?$/)
+    .regex(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/)
     .optional()
-    .describe("Due date in YYYY-MM-DD format"),
+    .describe('Due date as "YYYY-MM-DD HH:MM:SS" — time component is required (use 00:00:00 for midnight). T-separator and date-only formats are not accepted.'),
   responsible: z
     .number()
     .int()
@@ -336,6 +337,7 @@ Response: Workspace name, privacy, URL, member count, list of apps with IDs, and
 Use this to browse items in an app, search with filters, or paginate through results.
 Always returns max 30 items per page. Use offset to paginate.
 Tip: Use get_app_structure first to discover available fields and their external_ids for filtering/sorting.
+Tip: Category filters require integer option IDs in an array — use get_app_structure to find them. Example: {"deal-stage": [1, 2]}, NOT {"deal-stage": "Signed"}.
 
 Parameters:
 - app_id (required): The Podio app ID
@@ -354,7 +356,18 @@ Response: Paginated list of items with their key field values summarized as read
         offset: params.offset,
       };
       if (params.sort_by) body.sort_by = params.sort_by;
-      if (params.filters) body.filters = params.filters;
+      if (params.filters) {
+        for (const [key, val] of Object.entries(params.filters)) {
+          if (typeof val === "string") {
+            return (
+              `Filter error for field "${key}": category fields require integer option IDs in an array, not a string label.\n` +
+              `Example: {"${key}": [1, 2]}\n` +
+              `Use get_app_structure to find the correct option IDs.`
+            );
+          }
+        }
+        body.filters = params.filters;
+      }
 
       let result: any;
       try {
@@ -427,12 +440,14 @@ Parameters:
 - fields (required): Object mapping field external_ids to values. Examples:
   - Text: {"title": "My item"}
   - Category: {"status": "Active"} or {"status": 1} (option ID)
-  - Date: {"deadline": "2025-06-15"} or {"deadline": "2025-06-15 14:00:00"}
+  - Date: {"deadline": "2026-04-15 00:00:00"} (time is REQUIRED — use 00:00:00 for midnight)
   - Relationship: {"project": 12345} or {"project": [12345, 67890]}
   - Contact: {"assignee": 98765} (profile ID)
   - Number: {"amount": 42.5}
   - Money: {"price": {"value": "100.00", "currency": "USD"}}
 - tags (optional): Array of tag strings
+
+Note: Podio may auto-fill required text fields from linked relationship values if omitted. Always provide required fields explicitly to avoid unexpected values.
 
 Response: Confirmation with the new item ID and title.`,
     schema: CreateItemSchema,
@@ -475,7 +490,8 @@ Use get_app_structure to discover valid field external_ids.
 
 Parameters:
 - item_id (required): The item to update
-- fields (required): Object mapping field external_ids to new values (same format as create_item)
+- fields (optional): Object mapping field external_ids to new values (same format as create_item). Omit or pass {} for tag-only updates.
+  - Date fields require "YYYY-MM-DD HH:MM:SS" format (time is REQUIRED — use 00:00:00 for midnight)
 - tags (optional): Replace all tags on the item
 
 Response: Confirmation with the updated revision number.`,
@@ -492,25 +508,27 @@ Response: Confirmation with the updated revision number.`,
         throw err;
       }
 
-      const appId = item.app?.app_id;
-      if (!appId) {
-        return `Could not determine the app for item #${params.item_id}.`;
+      const body: any = {};
+
+      if (params.fields && Object.keys(params.fields).length > 0) {
+        const appId = item.app?.app_id;
+        if (!appId) {
+          return `Could not determine the app for item #${params.item_id}.`;
+        }
+
+        const app = await client.get(`/app/${appId}`);
+        const fieldMap = buildFieldMap(app.fields || []);
+
+        try {
+          body.fields = mapFieldValues(params.fields, fieldMap);
+        } catch (err: any) {
+          const validFields = (app.fields || [])
+            .map((f: any) => `"${f.external_id}" (${f.type}, label: "${f.config?.label || f.label || ""}")`)
+            .join("\n  ");
+          return `Field mapping error: ${err.message}\n\nValid fields for this app:\n  ${validFields}`;
+        }
       }
 
-      const app = await client.get(`/app/${appId}`);
-      const fieldMap = buildFieldMap(app.fields || []);
-
-      let mappedFields: Record<string, any>;
-      try {
-        mappedFields = mapFieldValues(params.fields, fieldMap);
-      } catch (err: any) {
-        const validFields = (app.fields || [])
-          .map((f: any) => `"${f.external_id}" (${f.type}, label: "${f.config?.label || f.label || ""}")`)
-          .join("\n  ");
-        return `Field mapping error: ${err.message}\n\nValid fields for this app:\n  ${validFields}`;
-      }
-
-      const body: any = { fields: mappedFields };
       if (params.tags !== undefined) body.tags = params.tags;
 
       const result = await client.put(`/item/${params.item_id}`, body);
@@ -546,7 +564,7 @@ Parameters:
 - task_id: Required for "complete" and "update" — the task ID
 - text: Task title (required for "create")
 - description: Task description
-- due_date: Due date as "YYYY-MM-DD"
+- due_date: Due date as "YYYY-MM-DD HH:MM:SS" — time is required (e.g. "2026-04-15 00:00:00")
 - responsible: User/contact ID to assign to
 - ref_type: Link type (e.g., "item") — use with ref_id to link the task
 - ref_id: ID of the object to link to (e.g., an item_id)
@@ -622,7 +640,7 @@ IMPORTANT: Always call this before create_item or update_item to discover the co
 Parameters:
 - app_id (required): The Podio app ID
 
-Response: App name, description, and a list of all fields with their external_id, type, required status, and options (for category fields) or referenced apps (for relationship fields).`,
+Response: App name, description, and a list of all fields with their external_id, type, required status, and options (for category fields) or referenced apps (for relationship fields). The integer option IDs shown for category fields are the values required when filtering with list_items.`,
     schema: GetAppStructureSchema,
     handler: async (client, params) => {
       let app: any;
@@ -719,13 +737,13 @@ function convertFieldValue(value: any, field: FieldInfo): any {
 
     case "date": {
       if (typeof value === "string") {
-        // "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-        const parts = value.split(" ");
-        const result: any = { start: value };
-        if (parts.length === 1) {
-          result.start = parts[0];
+        if (!/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/.test(value)) {
+          throw new Error(
+            `Date field requires "YYYY-MM-DD HH:MM:SS" format (time is required). ` +
+            `Use 00:00:00 for midnight. Got: "${value}"`
+          );
         }
-        return result;
+        return { start: value };
       }
       // Already an object with start/end
       return value;

@@ -74,6 +74,23 @@ Credentials are loaded automatically from the `.env` file at startup — no need
 ## Typical workflow
 
 1. `search_podio` or `get_workspace_overview` to find the right app
-2. `get_app_structure` to learn the fields
+2. `get_app_structure` to learn the fields and category option IDs
 3. `list_items` / `get_item_detail` to read data
 4. `create_item` / `update_item` / `add_comment` to write data
+
+## Limitations
+
+- **No item deletion**: There is no `delete_item` tool. Items must be deleted manually in the Podio UI. Workaround: prefix items with `DELETED-` to mark them for manual cleanup.
+
+## Troubleshooting
+
+**Date fields fail with "invalid value" or validation error**
+Time component is required: use `"YYYY-MM-DD HH:MM:SS"` (e.g. `"2026-04-15 00:00:00"`).
+Date-only format (`"2026-04-15"`) and ISO 8601 T-separator (`"2026-04-15T14:30:00"`) are not accepted.
+
+**Category filter returns "must be array" error**
+Category fields must be filtered by integer option IDs in an array, not string labels.
+Use `get_app_structure` to find option IDs, then filter like: `{"deal-stage": [1, 2]}` — not `{"deal-stage": "Signed"}`.
+
+**Can't update tags without changing a field**
+`update_item` accepts `fields` as optional — you can now pass `{}` or omit it entirely to do a tag-only update.
