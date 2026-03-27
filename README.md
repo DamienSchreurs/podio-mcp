@@ -40,17 +40,13 @@ Add this to your MCP client configuration (e.g. Claude Desktop `claude_desktop_c
   "mcpServers": {
     "podio": {
       "command": "node",
-      "args": ["/absolute/path/to/mcp-claude/dist/index.js"],
-      "env": {
-        "PODIO_CLIENT_ID": "your_client_id",
-        "PODIO_CLIENT_SECRET": "your_client_secret",
-        "PODIO_USERNAME": "your_email",
-        "PODIO_PASSWORD": "your_password"
-      }
+      "args": ["/absolute/path/to/podio-mcp/dist/index.js"]
     }
   }
 }
 ```
+
+Credentials are loaded automatically from the `.env` file at startup — no need to duplicate them in the client config.
 
 ## Tools (10 total)
 

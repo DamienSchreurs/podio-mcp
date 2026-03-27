@@ -20,13 +20,15 @@ import {
 // ---- Schemas ----
 
 const SearchSchema = z.object({
-  query: z.string().describe("The search text to look for across Podio"),
+  query: z.string().min(1).max(500).describe("The search text to look for across Podio"),
   ref_type: z
     .enum(["item", "task", "app", "status", "file", "profile"])
     .optional()
     .describe("Limit search to a specific object type"),
   space_id: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("Limit search to a specific workspace (space) ID"),
   limit: z
@@ -40,6 +42,8 @@ const SearchSchema = z.object({
 const ListWorkspacesSchema = z.object({
   org_id: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("Optional organization ID to list workspaces for. Omit to list all."),
 });
@@ -47,10 +51,14 @@ const ListWorkspacesSchema = z.object({
 const WorkspaceOverviewSchema = z.object({
   space_id: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("Workspace/space ID. Provide this OR space_name."),
   space_name: z
     .string()
+    .min(1)
+    .max(255)
     .optional()
     .describe(
       "Workspace name to search for. The server will find the matching workspace. Provide this OR space_id."
@@ -58,7 +66,7 @@ const WorkspaceOverviewSchema = z.object({
 });
 
 const ListItemsSchema = z.object({
-  app_id: z.number().describe("The Podio app ID to list items from"),
+  app_id: z.number().int().positive().describe("The Podio app ID to list items from"),
   filters: z
     .record(z.string(), z.any())
     .optional()
@@ -67,6 +75,7 @@ const ListItemsSchema = z.object({
     ),
   sort_by: z
     .string()
+    .max(100)
     .optional()
     .describe("Field external_id to sort by, or 'created_on', 'last_edit_on'"),
   sort_desc: z
@@ -75,6 +84,8 @@ const ListItemsSchema = z.object({
     .describe("Sort descending (newest first). Default true."),
   offset: z
     .number()
+    .int()
+    .min(0)
     .default(0)
     .describe("Pagination offset (default 0). Use with limit for paging."),
   limit: z
@@ -86,38 +97,40 @@ const ListItemsSchema = z.object({
 });
 
 const GetItemDetailSchema = z.object({
-  item_id: z.number().describe("The Podio item ID to retrieve"),
+  item_id: z.number().int().positive().describe("The Podio item ID to retrieve"),
 });
 
 const CreateItemSchema = z.object({
-  app_id: z.number().describe("The Podio app ID to create the item in"),
+  app_id: z.number().int().positive().describe("The Podio app ID to create the item in"),
   fields: z
     .record(z.string(), z.any())
     .describe(
       'Key-value pairs of field values. Keys should be field external_ids (use get_app_structure to discover them). Values depend on field type: text fields take strings, category fields take option IDs or text, date fields take "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS", relationship fields take item IDs (number or array of numbers), contact fields take profile IDs.'
     ),
   tags: z
-    .array(z.string())
+    .array(z.string().min(1).max(100))
+    .max(50)
     .optional()
     .describe("Tags to add to the item"),
 });
 
 const UpdateItemSchema = z.object({
-  item_id: z.number().describe("The Podio item ID to update"),
+  item_id: z.number().int().positive().describe("The Podio item ID to update"),
   fields: z
     .record(z.string(), z.any())
     .describe(
       "Key-value pairs of fields to update. Only include fields you want to change. Same format as create_item."
     ),
   tags: z
-    .array(z.string())
+    .array(z.string().min(1).max(100))
+    .max(50)
     .optional()
     .describe("Replace all tags on the item (omit to leave tags unchanged)"),
 });
 
 const AddCommentSchema = z.object({
-  item_id: z.number().describe("The Podio item ID to comment on"),
-  text: z.string().describe("The comment text"),
+  item_id: z.number().int().positive().describe("The Podio item ID to comment on"),
+  text: z.string().min(1).max(10000).describe("The comment text"),
 });
 
 const ManageTaskSchema = z.object({
@@ -126,27 +139,36 @@ const ManageTaskSchema = z.object({
     .describe("What to do: create a new task, complete an existing task, or update a task"),
   task_id: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("Required for 'complete' and 'update' actions. The task ID."),
   text: z
     .string()
+    .min(1)
+    .max(500)
     .optional()
     .describe("Task text/title. Required for 'create'."),
-  description: z.string().optional().describe("Task description"),
+  description: z.string().max(5000).optional().describe("Task description"),
   due_date: z
     .string()
+    .regex(/^\d{4}-\d{2}-\d{2}(\s\d{2}:\d{2}:\d{2})?$/)
     .optional()
     .describe("Due date in YYYY-MM-DD format"),
   responsible: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("User/contact ID to assign the task to"),
   ref_type: z
-    .string()
+    .enum(["item", "task", "app", "space", "org", "profile"])
     .optional()
     .describe("Reference type to link to, e.g. 'item'"),
   ref_id: z
     .number()
+    .int()
+    .positive()
     .optional()
     .describe("Reference ID to link to, e.g. an item_id"),
 });
@@ -165,7 +187,7 @@ const GetNotificationsSchema = z.object({
 });
 
 const GetAppStructureSchema = z.object({
-  app_id: z.number().describe("The Podio app ID to get field definitions for"),
+  app_id: z.number().int().positive().describe("The Podio app ID to get field definitions for"),
 });
 
 // ---- Tool definitions ----
@@ -626,25 +648,28 @@ interface FieldInfo {
   config: any;
 }
 
+/**
+ * Builds a lookup map keyed by exact external_id (primary) and by normalised label
+ * (secondary, only when no exact match exists). Callers should always prefer the
+ * primary key; the label fallback is convenience-only and is clearly documented.
+ */
 function buildFieldMap(fields: any[]): Map<string, FieldInfo> {
   const map = new Map<string, FieldInfo>();
   for (const f of fields) {
     const key = f.external_id || String(f.field_id);
-    map.set(key, {
+    const info: FieldInfo = {
       field_id: f.field_id,
       external_id: f.external_id,
       type: f.type,
       config: f.config,
-    });
-    // Also map by label (lowercase) for convenience
+    };
+    // Primary: exact external_id (always added)
+    map.set(key, info);
+    // Secondary: normalised label ("My Field" → "my-field"), only when it would not
+    // shadow an existing primary key so we never silently replace a canonical entry.
     const label = (f.config?.label || f.label || "").toLowerCase().replace(/\s+/g, "-");
-    if (label && !map.has(label)) {
-      map.set(label, {
-        field_id: f.field_id,
-        external_id: f.external_id,
-        type: f.type,
-        config: f.config,
-      });
+    if (label && label !== key && !map.has(label)) {
+      map.set(label, info);
     }
   }
   return map;
@@ -657,9 +682,12 @@ function mapFieldValues(
   const result: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(input)) {
-    const fieldInfo = fieldMap.get(key) || fieldMap.get(key.toLowerCase().replace(/\s+/g, "-"));
+    // 1. Exact match on external_id (preferred)
+    // 2. Normalised label fallback (spaces → hyphens, lowercased)
+    const normalised = key.toLowerCase().replace(/\s+/g, "-");
+    const fieldInfo = fieldMap.get(key) ?? (key !== normalised ? fieldMap.get(normalised) : undefined);
     if (!fieldInfo) {
-      const validKeys = [...new Set([...fieldMap.values()].map((f) => f.external_id))];
+      const validKeys = [...new Set([...fieldMap.values()].map((f) => f.external_id))].filter(Boolean);
       throw new Error(
         `Unknown field "${key}". Valid external_ids: ${validKeys.join(", ")}`
       );
