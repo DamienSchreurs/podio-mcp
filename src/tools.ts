@@ -532,7 +532,9 @@ Response: Confirmation with the updated revision number.`,
       if (params.tags !== undefined) body.tags = params.tags;
 
       const result = await client.put(`/item/${params.item_id}`, body);
-      return `Item #${params.item_id} updated successfully.\nRevision: ${result.revision}\nTitle: ${result.title || item.title || "(untitled)"}`;
+      const revision = result?.revision ?? "N/A";
+      const title = result?.title || item.title || "(untitled)";
+      return `Item #${params.item_id} updated successfully.\nRevision: ${revision}\nTitle: ${title}`;
     },
   },
 
