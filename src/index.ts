@@ -24,7 +24,7 @@ import { z } from "zod";
 async function main() {
   const server = new McpServer({
     name: "podio-mcp-server",
-    version: "1.0.0",
+    version: "1.1.2",
   });
 
   // Initialize Podio client (validates env vars on construction)
