@@ -348,9 +348,12 @@ export function formatTask(task: any): string {
 
 export function truncateResponse(text: string): string {
   if (text.length > MAX_RESPONSE_CHARS) {
+    // Truncate at the last newline before the limit so we never cut mid-line.
+    const cutPoint = text.lastIndexOf("\n", MAX_RESPONSE_CHARS);
+    const safeEnd = cutPoint > 0 ? cutPoint : MAX_RESPONSE_CHARS;
     return (
-      text.slice(0, MAX_RESPONSE_CHARS) +
-      `\n\n⚠️ Response truncated (${text.length} chars). Use more specific queries or pagination to see remaining data.`
+      text.slice(0, safeEnd) +
+      `\n\n⚠️ Response truncated (${text.length} chars total, showing first ${safeEnd}). Use more specific queries or pagination to see remaining data.`
     );
   }
   return text;

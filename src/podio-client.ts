@@ -5,6 +5,9 @@
 const PODIO_API_BASE = "https://api.podio.com";
 const TOKEN_URL = "https://podio.com/oauth/token";
 
+/** Timeout for all outbound HTTP requests in milliseconds. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 interface TokenResponse {
   access_token: string;
   refresh_token: string;
@@ -17,6 +20,15 @@ interface PodioConfig {
   clientSecret: string;
   username: string;
   password: string;
+}
+
+/** Create a fetch with a hard timeout via AbortController. */
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timer)
+  );
 }
 
 export class PodioClient {
@@ -49,15 +61,27 @@ export class PodioClient {
       password: this.config.password,
     });
 
-    const resp = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(
+        TOKEN_URL,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        },
+        REQUEST_TIMEOUT_MS
+      );
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new Error("Podio authentication timed out. Check your network connection.");
+      }
+      throw new Error(`Podio authentication failed: network error`);
+    }
 
     if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`Podio authentication failed (${resp.status}): ${text}`);
+      // Do not forward the raw response body — it may contain credential details.
+      throw new Error(`Podio authentication failed (${resp.status}). Check your credentials.`);
     }
 
     const data = (await resp.json()) as TokenResponse;
@@ -79,11 +103,22 @@ export class PodioClient {
       refresh_token: this.refreshToken,
     });
 
-    const resp = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(
+        TOKEN_URL,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        },
+        REQUEST_TIMEOUT_MS
+      );
+    } catch {
+      // On network error during refresh, fall back to full re-auth
+      this.refreshToken = null;
+      return this.authenticate();
+    }
 
     if (!resp.ok) {
       // Refresh failed, do full re-auth
@@ -131,22 +166,36 @@ export class PodioClient {
       "Content-Type": "application/json",
     };
 
-    const resp = await fetch(url, {
+    const fetchOptions: RequestInit = {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-    });
+    };
+
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(url, fetchOptions, REQUEST_TIMEOUT_MS);
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new Error(`Podio API request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
+      }
+      throw new Error("Podio API request failed: network error");
+    }
 
     if (resp.status === 401) {
       // Token might have been revoked server-side; re-authenticate once
       await this.authenticate();
       const retryToken = this.accessToken!;
       headers.Authorization = `OAuth2 ${retryToken}`;
-      const retry = await fetch(url, {
-        method,
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      let retry: Response;
+      try {
+        retry = await fetchWithTimeout(url, { ...fetchOptions, headers }, REQUEST_TIMEOUT_MS);
+      } catch (err: any) {
+        if (err?.name === "AbortError") {
+          throw new Error(`Podio API retry timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
+        }
+        throw new Error("Podio API retry failed: network error");
+      }
       if (!retry.ok) {
         throw await this.buildError(retry);
       }
@@ -163,14 +212,19 @@ export class PodioClient {
   }
 
   private async buildError(resp: Response): Promise<PodioApiError> {
-    let detail: string;
+    let userMessage: string;
     try {
       const json = await resp.json();
-      detail = json.error_description || json.error || JSON.stringify(json);
+      // Only surface the human-readable description; never forward raw JSON bodies.
+      userMessage = typeof json.error_description === "string"
+        ? json.error_description
+        : typeof json.error === "string"
+        ? json.error
+        : "Unexpected error from Podio API";
     } catch {
-      detail = await resp.text().catch(() => "Unknown error");
+      userMessage = "Unexpected error from Podio API";
     }
-    return new PodioApiError(resp.status, detail);
+    return new PodioApiError(resp.status, userMessage);
   }
 
   // Convenience methods
